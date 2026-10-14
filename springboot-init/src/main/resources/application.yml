@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: spring-validator
+
+server:
+  port: 8080
+
+validator:
+  # Reject JSON properties that the VO does not declare (E_UNKNOWN_FIELD). Set to false to ignore them.
+  fail-on-unknown-properties: true
+  # VO-specific code -> generic code (wire code like E_MANDATORY_MISSING or enum name like MANDATORY_MISSING).
+  # Unmapped VO codes fall back to the default for the constraint type (e.g. @NotBlank -> E_MANDATORY_MISSING).
+  error-mapping:
+    USR_001: E_MANDATORY_MISSING
+    USR_002: E_INVALID_LENGTH
+    USR_003: E_MANDATORY_MISSING
+    USR_004: E_INVALID_FORMAT
+    USR_005: E_INVALID_FORMAT
+    USR_006: E_INVALID_LENGTH
+    USR_007: E_INVALID_DATE
+    ORD_001: E_MANDATORY_MISSING
+    ORD_002: E_INVALID_FORMAT
+    ORD_003: E_MANDATORY_MISSING
+    ORD_004: E_MANDATORY_MISSING
+    ORD_005: E_INVALID_FORMAT
+    ORD_006: E_MANDATORY_MISSING
+    ORD_007: E_INVALID_DATE
+    ADR_001: E_MANDATORY_MISSING
+    ADR_002: E_INVALID_FORMAT
+    ADR_003: E_MANDATORY_MISSING
+    ADR_004: E_MANDATORY_MISSING
