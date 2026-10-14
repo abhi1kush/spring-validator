@@ -34,6 +34,8 @@ import java.util.stream.Collectors;
  *       is a VO code (e.g. {@code USR_001}) it is passed to the {@link ErrorCodeMapper}; otherwise,
  *       or when unmapped, the default from {@link ConstraintDefaults} is used (length constraints
  *       are split into max-exceeded / min-not-met by comparing the actual length with the bounds).</li>
+ *   <li>Paths use API names, segment by segment: {@link com.abhi1kush.validator.annotation.ErrorField},
+ *       else the Jackson JSON name, else the Java name (see {@link FieldNameResolver}).</li>
  *   <li>The generic code with the highest {@link GenericErrorCode#priority()} wins; all fields
  *       violating that code are listed, sorted and de-duplicated, as {@code {a, b}}.</li>
  * </ol>
@@ -46,12 +48,11 @@ public class JsonRequestValidator {
     /** A constraint message matching this pattern is treated as a VO-specific error code. */
     public static final Pattern VO_CODE_PATTERN = Pattern.compile("[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+");
 
-    private static final String ROOT = "$";
-
     private final ObjectMapper objectMapper;
     private final Validator validator;
     private final ErrorCodeMapper errorCodeMapper;
     private final boolean failOnUnknownProperties;
+    private final FieldNameResolver fieldNames;
 
     /**
      * @param objectMapper            the (Spring-managed) Jackson mapper; it is not modified
@@ -65,6 +66,7 @@ public class JsonRequestValidator {
         this.validator = Objects.requireNonNull(validator, "validator");
         this.errorCodeMapper = Objects.requireNonNull(errorCodeMapper, "errorCodeMapper");
         this.failOnUnknownProperties = failOnUnknownProperties;
+        this.fieldNames = new FieldNameResolver(objectMapper);
     }
 
     /**
@@ -84,7 +86,7 @@ public class JsonRequestValidator {
         try {
             vo = reader(voType).readValue(requestBody);
         } catch (JsonProcessingException e) {
-            return fromJacksonException(e);
+            return fromJacksonException(e, voType);
         }
         if (vo == null) {
             return ValidationResult.failure(GenericErrorCode.EMPTY_BODY, "");
@@ -93,7 +95,7 @@ public class JsonRequestValidator {
         if (violations.isEmpty()) {
             return ValidationResult.success(vo);
         }
-        return fromViolations(violations);
+        return fromViolations(violations, voType);
     }
 
     private <T> ObjectReader reader(Class<T> voType) {
@@ -103,39 +105,28 @@ public class JsonRequestValidator {
                 : reader.without(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
     }
 
-    private static <T> ValidationResult<T> fromJacksonException(JacksonException e) {
+    private <T> ValidationResult<T> fromJacksonException(JacksonException e, Class<T> voType) {
         if (e instanceof PropertyBindingException pbe) {
             // Unrecognized / ignored property: the path already ends with the offending name
-            return ValidationResult.failure(GenericErrorCode.UNKNOWN_FIELD, braces(List.of(path(pbe))));
+            return ValidationResult.failure(GenericErrorCode.UNKNOWN_FIELD, braces(List.of(path(pbe, voType))));
         }
         if (e instanceof MismatchedInputException mie) {
-            return ValidationResult.failure(GenericErrorCode.TYPE_MISMATCH, braces(List.of(path(mie))));
+            return ValidationResult.failure(GenericErrorCode.TYPE_MISMATCH, braces(List.of(path(mie, voType))));
         }
         if (e instanceof JsonMappingException jme && !jme.getPath().isEmpty()) {
             // e.g. a value that cannot be instantiated or converted (enum, date ...)
-            return ValidationResult.failure(GenericErrorCode.TYPE_MISMATCH, braces(List.of(path(jme))));
+            return ValidationResult.failure(GenericErrorCode.TYPE_MISMATCH, braces(List.of(path(jme, voType))));
         }
         return ValidationResult.failure(GenericErrorCode.MALFORMED_JSON, "");
     }
 
-    private static String path(JsonMappingException e) {
-        StringBuilder sb = new StringBuilder();
-        for (JsonMappingException.Reference ref : e.getPath()) {
-            if (ref.getFieldName() != null) {
-                if (!sb.isEmpty()) {
-                    sb.append('.');
-                }
-                sb.append(ref.getFieldName());
-            } else if (ref.getIndex() >= 0) {
-                sb.append('[').append(ref.getIndex()).append(']');
-            }
-        }
-        return sb.isEmpty() ? ROOT : sb.toString();
+    private String path(JsonMappingException e, Class<?> voType) {
+        return fieldNames.resolve(voType, e.getPath());
     }
 
-    private <T> ValidationResult<T> fromViolations(Set<ConstraintViolation<T>> violations) {
+    private <T> ValidationResult<T> fromViolations(Set<ConstraintViolation<T>> violations, Class<T> voType) {
         List<Resolved> resolved = violations.stream()
-                .map(v -> new Resolved(resolve(v), pathOf(v)))
+                .map(v -> new Resolved(resolve(v), fieldNames.resolve(voType, v.getPropertyPath())))
                 .toList();
         GenericErrorCode winner = resolved.stream()
                 .map(Resolved::code)
@@ -163,11 +154,6 @@ public class JsonRequestValidator {
             }
         }
         return ConstraintDefaults.forViolation(violation);
-    }
-
-    private static String pathOf(ConstraintViolation<?> violation) {
-        String p = violation.getPropertyPath().toString();
-        return p.isEmpty() ? ROOT : p;
     }
 
     private static String braces(Iterable<String> fields) {

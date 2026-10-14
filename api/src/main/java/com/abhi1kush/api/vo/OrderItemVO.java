@@ -1,5 +1,6 @@
 package com.abhi1kush.api.vo;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -20,7 +21,8 @@ import java.math.BigDecimal;
 @Jacksonized
 public class OrderItemVO {
 
-    /** Stock keeping unit, mandatory. */
+    /** Stock keeping unit, mandatory; JSON {@code sku_code}. */
+    @JsonProperty("sku_code")
     @NotBlank
     String sku;
 
