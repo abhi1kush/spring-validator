@@ -32,7 +32,8 @@ import java.util.stream.Collectors;
  *       or {@link GenericErrorCode#TYPE_MISMATCH}.</li>
  *   <li>Each constraint violation is resolved to a generic code: if the constraint {@code message}
  *       is a VO code (e.g. {@code USR_001}) it is passed to the {@link ErrorCodeMapper}; otherwise,
- *       or when unmapped, the constraint type default from {@link ConstraintDefaults} is used.</li>
+ *       or when unmapped, the default from {@link ConstraintDefaults} is used (length constraints
+ *       are split into max-exceeded / min-not-met by comparing the actual length with the bounds).</li>
  *   <li>The generic code with the highest {@link GenericErrorCode#priority()} wins; all fields
  *       violating that code are listed, sorted and de-duplicated, as {@code {a, b}}.</li>
  * </ol>
@@ -161,8 +162,7 @@ public class JsonRequestValidator {
                 return mapped.get();
             }
         }
-        return ConstraintDefaults.forConstraint(
-                violation.getConstraintDescriptor().getAnnotation().annotationType());
+        return ConstraintDefaults.forViolation(violation);
     }
 
     private static String pathOf(ConstraintViolation<?> violation) {

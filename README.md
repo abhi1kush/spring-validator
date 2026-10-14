@@ -37,7 +37,7 @@ on its own. It returns a plain `int` HTTP status rather than a Spring MVC type, 
 ## Build & run
 
 ```bash
-./mvnw verify                                  # 112 tests: 88 in validator-core, 24 in springboot-init
+./mvnw verify                                  # 127 tests: 100 in validator-core, 27 in springboot-init
 ./mvnw -pl springboot-init spring-boot:run     # after ./mvnw install (or: java -jar springboot-init/target/springboot-init-0.1.0-SNAPSHOT.jar)
 ```
 
@@ -59,7 +59,7 @@ Requires JDK 21. The Maven wrapper pins Maven 3.9.9.
      `ErrorCodeMapper` maps it to a generic code.
    * If the message is not a VO code, or the code is not mapped, the default for the constraint type is used
      (`ConstraintDefaults`: `@NotNull/@NotBlank/@NotEmpty` → `E_MANDATORY_MISSING`, `@Pattern/@Email/@Digits`
-     → `E_INVALID_FORMAT`, `@Size/@OptionalMinSize` → `E_INVALID_LENGTH`, `@Min/@Max/@DecimalMin/…`
+     → `E_INVALID_FORMAT`, `@Size`/`@Length` → `E_MAX_LENGTH_EXCEEDED` or `E_MIN_LENGTH_NOT_MET` (see *Length errors*), `@OptionalMinSize` → `E_MIN_LENGTH_NOT_MET`, `@Min/@Max/@DecimalMin/…`
      → `E_OUT_OF_RANGE`, `@OptionalDate/@Past/@Future…` → `E_INVALID_DATE`, anything else → `E_INVALID_VALUE`).
 5. **Priority & grouping**: the generic code with the highest priority wins. All property paths with that code
    are de-duplicated and sorted in a deterministic natural order (`address.city < items[2].qty < items[10].qty < name`),
@@ -98,9 +98,31 @@ The higher the priority, the more it wins. Codes are defined in `GenericErrorCod
 | 600      | `E_MANDATORY_MISSING` | 400  | `Mandatory fields missing: {fields}`      |
 | 500      | `E_INVALID_FORMAT`    | 400  | `Invalid format for fields: {fields}`     |
 | 450      | `E_INVALID_DATE`      | 400  | `Invalid date for fields: {fields}`       |
-| 400      | `E_INVALID_LENGTH`    | 400  | `Invalid length for fields: {fields}`     |
+| 410      | `E_MAX_LENGTH_EXCEEDED` | 400 | `Max length exceeded for fields: {fields}` |
+| 400      | `E_MIN_LENGTH_NOT_MET`  | 400 | `Length is less than allowed length for fields: {fields}` |
 | 300      | `E_OUT_OF_RANGE`      | 400  | `Value out of range for fields: {fields}` |
 | 100      | `E_INVALID_VALUE`     | 400  | `Invalid value for fields: {fields}`      |
+
+## Length errors
+
+Length violations come in two categories:
+
+* `E_MAX_LENGTH_EXCEEDED` (priority 410): the value is longer than allowed. It is ranked just above min so the
+  result stays deterministic, and an over-long value is the stronger signal (truncation or abuse).
+* `E_MIN_LENGTH_NOT_MET` (priority 400): the value is shorter than allowed.
+
+Both sit between `E_INVALID_DATE` (450) and `E_OUT_OF_RANGE` (300).
+
+* `@Size` and Hibernate `@Length` have both bounds, so the category is decided **per violation**. The validator
+  takes the actual length of the rejected value and compares it with the constraint's `max` attribute: longer
+  gives max, otherwise min. Length means characters for a `CharSequence`, elements for a `Collection`, entries
+  for a `Map`, or the array length. For example, `@Size(max = 50) List<…> items` with 51 items gives
+  `E_MAX_LENGTH_EXCEEDED: {items}`, and `@NotEmpty` still reports an empty list as mandatory.
+* `@Size` ignores `null`, but `""` counts as length 0, so `@Size(min = 2)` rejects `""` as min-not-met.
+  `@Size(max)` alone accepts `""`.
+* `@OptionalMinSize` always gives `E_MIN_LENGTH_NOT_MET`.
+* If a VO code is mapped explicitly, the mapping wins: a VO code can map to either category, whatever the actual length.
+* If a field is too long and another is too short, max wins. Fields are grouped within the winning category only.
 
 ## Custom annotations
 
@@ -120,7 +142,7 @@ valid (see `UserVO.nickname`). Misconfigured values (e.g. `@OptionalMinSize(-1)`
 public record CustomerVO(
         @NotBlank(message = "CUS_001") String name,
         @NotBlank(message = "CUS_002") @Email(message = "CUS_003") String email,
-        @OptionalMinSize(value = 3, message = "CUS_004") @Size(max = 20, message = "CUS_004") String nickname,
+        @OptionalMinSize(value = 3, message = "CUS_004") @Size(max = 20, message = "CUS_006") String nickname,
         @OptionalDate(when = OptionalDate.Bound.PAST, message = "CUS_005") String birthDate,
         @NotNull @Valid AddressVO address,          // nested: paths like address.city
         @NotEmpty List<@Valid ItemVO> items) {      // list: paths like items[0].qty
@@ -143,6 +165,8 @@ validator:
   error-mapping:                        # VO code -> generic code (wire code or enum name)
     CUS_001: E_MANDATORY_MISSING
     CUS_003: INVALID_FORMAT
+    CUS_004: E_MIN_LENGTH_NOT_MET
+    CUS_006: MAX_LENGTH_EXCEEDED
 ```
 
 An unknown generic code in the mapping stops application startup. To use another source (database, per-tenant
@@ -204,19 +228,35 @@ HTTP/1.1 400
 
 ```
 
-### @OptionalMinSize (nickname too short)
+### @OptionalMinSize: nickname too short → E_MIN_LENGTH_NOT_MET
 ```console
 $ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"a@b.co","age":30,"nickname":"ab"}'
 HTTP/1.1 400 
-{"errorCode":"E_INVALID_LENGTH","errorDescription":"Invalid length for fields: {nickname}"}
+{"errorCode":"E_MIN_LENGTH_NOT_MET","errorDescription":"Length is less than allowed length for fields: {nickname}"}
 
 ```
 
-### @Size(max = 20) on the optional nickname (too long)
+### @Size(max): nickname too long → E_MAX_LENGTH_EXCEEDED
 ```console
 $ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"a@b.co","age":30,"nickname":"aaaaaaaaaaaaaaaaaaaaa"}'
 HTTP/1.1 400 
-{"errorCode":"E_INVALID_LENGTH","errorDescription":"Invalid length for fields: {nickname}"}
+{"errorCode":"E_MAX_LENGTH_EXCEEDED","errorDescription":"Max length exceeded for fields: {nickname}"}
+
+```
+
+### Too long + too short at once: max wins
+```console
+$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","email":"a@b.co","age":30,"nickname":"ab"}'
+HTTP/1.1 400 
+{"errorCode":"E_MAX_LENGTH_EXCEEDED","errorDescription":"Max length exceeded for fields: {name}"}
+
+```
+
+### Max length grouped
+```console
+$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","email":"a@b.co","age":30,"nickname":"aaaaaaaaaaaaaaaaaaaaa"}'
+HTTP/1.1 400 
+{"errorCode":"E_MAX_LENGTH_EXCEEDED","errorDescription":"Max length exceeded for fields: {name, nickname}"}
 
 ```
 
@@ -310,10 +350,10 @@ HTTP/1.1 400
 
 ## Tests
 
-* `validator-core` (88 tests): each custom annotation (null, "", absent, valid, invalid, whitespace, bounds,
+* `validator-core` (100 tests): each custom annotation (null, "", absent, valid, invalid, whitespace, bounds,
   custom pattern); empty / malformed / unknown-field / type-mismatch bodies; priority selection; grouping
   as `{a, b}` and de-duplication; nested and indexed list paths in numeric order; VO→generic mapping, fallback
-  and a custom `ErrorCodeMapper`; path ordering; fail-fast mapping; `ValidationResult` invariants; thread safety;
+  and a custom `ErrorCodeMapper`; max/min length categories (too long, too short, both at once, grouping per category, `@Size` and `@Length` with both bounds, empty string, lists, maps, arrays, VO-code override); path ordering; fail-fast mapping; `ValidationResult` invariants; thread safety;
   the auto-configuration (`ApplicationContextRunner`).
-* `springboot-init` (24 tests): `@SpringBootTest` + MockMvc for every endpoint scenario above, the
+* `springboot-init` (27 tests): `@SpringBootTest` + MockMvc for every endpoint scenario above, the
   `fail-on-unknown-properties=false` policy, and the binding of the `application.yml` mapping.

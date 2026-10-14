@@ -27,6 +27,6 @@ public record UserVO(
         @NotBlank(message = "USR_003") @Email(message = "USR_004") String email,
         @Pattern(regexp = "^\\+?[0-9]{10,15}$", message = "USR_005") String phone,
         @NotNull @Min(18) @Max(120) Integer age,
-        @OptionalMinSize(value = 3, message = "USR_006") @Size(max = 20, message = "USR_006") String nickname,
+        @OptionalMinSize(value = 3, message = "USR_006") @Size(max = 20, message = "USR_008") String nickname,
         @OptionalDate(pattern = "yyyy-MM-dd", when = OptionalDate.Bound.PAST, message = "USR_007") String birthDate) {
 }

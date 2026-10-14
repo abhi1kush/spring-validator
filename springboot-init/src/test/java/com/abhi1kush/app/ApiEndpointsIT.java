@@ -95,13 +95,13 @@ class ApiEndpointsIT {
     @Test
     void userNicknameTooShort() throws Exception {
         expectError(postJson("/api/users", VALID_USER.replace("\"abhi\"", "\"ab\"")), 400,
-                "E_INVALID_LENGTH", "Invalid length for fields: {nickname}");
+                "E_MIN_LENGTH_NOT_MET", "Length is less than allowed length for fields: {nickname}");
     }
 
     @Test
     void userNicknameTooLong() throws Exception {
         expectError(postJson("/api/users", VALID_USER.replace("\"abhi\"", "\"" + "a".repeat(21) + "\"")), 400,
-                "E_INVALID_LENGTH", "Invalid length for fields: {nickname}");
+                "E_MAX_LENGTH_EXCEEDED", "Max length exceeded for fields: {nickname}");
     }
 
     @Test
@@ -179,12 +179,32 @@ class ApiEndpointsIT {
     @Test
     void orderShortNotesUseOptionalMinSize() throws Exception {
         expectError(postJson("/api/orders", VALID_ORDER.replace("Leave at the door", "hi")), 400,
-                "E_INVALID_LENGTH", "Invalid length for fields: {notes}");
+                "E_MIN_LENGTH_NOT_MET", "Length is less than allowed length for fields: {notes}");
     }
 
     @Test
     void orderNestedTypeMismatch() throws Exception {
         expectError(postJson("/api/orders", VALID_ORDER.replace("\"qty\":1", "\"qty\":\"one\"")), 400,
                 "E_TYPE_MISMATCH", "Invalid type for fields: {items[1].qty}");
+    }
+
+    @Test
+    void userTooLongNameAndTooShortNicknameMaxWins() throws Exception {
+        expectError(postJson("/api/users", VALID_USER.replace("Abhishek", "A".repeat(51)).replace("\"abhi\"", "\"ab\"")),
+                400, "E_MAX_LENGTH_EXCEEDED", "Max length exceeded for fields: {name}");
+    }
+
+    @Test
+    void userTooLongNameAndNicknameGrouped() throws Exception {
+        expectError(postJson("/api/users", VALID_USER.replace("Abhishek", "A".repeat(51))
+                        .replace("\"abhi\"", "\"" + "n".repeat(21) + "\"")),
+                400, "E_MAX_LENGTH_EXCEEDED", "Max length exceeded for fields: {name, nickname}");
+    }
+
+    @Test
+    void orderTooManyItemsIsMaxLengthOnCollection() throws Exception {
+        String items = String.join(",", java.util.Collections.nCopies(51, "{\"sku\":\"S\",\"qty\":1,\"price\":1}"));
+        expectError(postJson("/api/orders", VALID_ORDER.replaceAll("\"items\":\\[.*?]", "\"items\":[" + items + "]")),
+                400, "E_MAX_LENGTH_EXCEEDED", "Max length exceeded for fields: {items}");
     }
 }
