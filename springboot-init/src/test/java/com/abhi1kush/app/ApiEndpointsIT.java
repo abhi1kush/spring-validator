@@ -93,8 +93,14 @@ class ApiEndpointsIT {
     }
 
     @Test
-    void userOptionalSizeViolation() throws Exception {
+    void userNicknameTooShort() throws Exception {
         expectError(postJson("/api/users", VALID_USER.replace("\"abhi\"", "\"ab\"")), 400,
+                "E_INVALID_LENGTH", "Invalid length for fields: {nickname}");
+    }
+
+    @Test
+    void userNicknameTooLong() throws Exception {
+        expectError(postJson("/api/users", VALID_USER.replace("\"abhi\"", "\"" + "a".repeat(21) + "\"")), 400,
                 "E_INVALID_LENGTH", "Invalid length for fields: {nickname}");
     }
 

@@ -2,7 +2,6 @@ package com.abhi1kush.validator.mapping;
 
 import com.abhi1kush.validator.annotation.OptionalDate;
 import com.abhi1kush.validator.annotation.OptionalMinSize;
-import com.abhi1kush.validator.annotation.OptionalSize;
 import com.abhi1kush.validator.core.GenericErrorCode;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
@@ -46,7 +45,6 @@ public final class ConstraintDefaults {
             Map.entry(Future.class, GenericErrorCode.INVALID_DATE),
             Map.entry(FutureOrPresent.class, GenericErrorCode.INVALID_DATE),
             Map.entry(Size.class, GenericErrorCode.INVALID_LENGTH),
-            Map.entry(OptionalSize.class, GenericErrorCode.INVALID_LENGTH),
             Map.entry(OptionalMinSize.class, GenericErrorCode.INVALID_LENGTH),
             Map.entry(Min.class, GenericErrorCode.OUT_OF_RANGE),
             Map.entry(Max.class, GenericErrorCode.OUT_OF_RANGE),

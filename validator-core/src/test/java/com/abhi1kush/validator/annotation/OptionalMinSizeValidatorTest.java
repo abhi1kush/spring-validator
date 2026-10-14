@@ -14,6 +14,12 @@ class OptionalMinSizeValidatorTest {
     record Vo(@OptionalMinSize(4) String value) {
     }
 
+    record Bounded(@OptionalMinSize(3) @jakarta.validation.constraints.Size(max = 5) String value) {
+    }
+
+    record Invalid(@OptionalMinSize(-1) String value) {
+    }
+
     private static boolean valid(String value) {
         return TestSupport.VALIDATOR.validate(new Vo(value)).isEmpty();
     }
@@ -43,5 +49,31 @@ class OptionalMinSizeValidatorTest {
     @ValueSource(strings = {"a", "abc", "   "})
     void tooShortIsInvalid(String value) {
         assertThat(valid(value)).isFalse();
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.NullSource
+    @ValueSource(strings = {"", "abc", "abcde", "   "})
+    void combinedWithSizeMaxKeepsOptionalSemantics(String value) {
+        assertThat(TestSupport.VALIDATOR.validate(new Bounded(value))).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"a", "ab", "abcdef", " "})
+    void combinedWithSizeMaxRejectsOutOfRange(String value) {
+        assertThat(TestSupport.VALIDATOR.validate(new Bounded(value))).isNotEmpty();
+    }
+
+    @Test
+    void invalidValueMapsToInvalidLength() {
+        var r = TestSupport.jsonValidator(Map.of(), true).validate("{\"value\":\"ab\"}", Vo.class);
+        assertThat(r.errorCode()).contains("E_INVALID_LENGTH");
+        assertThat(r.errorDescription()).contains("Invalid length for fields: {value}");
+    }
+
+    @Test
+    void negativeMinFailsFast() {
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> TestSupport.VALIDATOR.validate(new Invalid("x")))
+                .hasRootCauseInstanceOf(IllegalArgumentException.class);
     }
 }
