@@ -19,7 +19,7 @@ spring-validator/                 parent pom (packaging pom, imports spring-boot
 │   └── com.abhi1kush.validator
 │       ├── core/                 JsonRequestValidator, ValidationResult, GenericErrorCode
 │       ├── mapping/              ErrorCodeMapper, PropertiesErrorCodeMapper, ConstraintDefaults
-│       ├── annotation/           @OptionalSize, @OptionalMinSize, @OptionalDate + validators
+│       ├── annotation/           @OptionalMinSize, @OptionalDate + validators
 │       └── autoconfigure/        JsonRequestValidatorAutoConfiguration, ValidatorProperties
 │       META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
 ├── api/                          sample REST controllers and VOs (depends on validator-core)
@@ -37,7 +37,7 @@ on its own. It returns a plain `int` HTTP status rather than a Spring MVC type, 
 ## Build & run
 
 ```bash
-./mvnw verify                                  # 114 tests: 91 in validator-core, 23 in springboot-init
+./mvnw verify                                  # 112 tests: 88 in validator-core, 24 in springboot-init
 ./mvnw -pl springboot-init spring-boot:run     # after ./mvnw install (or: java -jar springboot-init/target/springboot-init-0.1.0-SNAPSHOT.jar)
 ```
 
@@ -59,7 +59,7 @@ Requires JDK 21. The Maven wrapper pins Maven 3.9.9.
      `ErrorCodeMapper` maps it to a generic code.
    * If the message is not a VO code, or the code is not mapped, the default for the constraint type is used
      (`ConstraintDefaults`: `@NotNull/@NotBlank/@NotEmpty` → `E_MANDATORY_MISSING`, `@Pattern/@Email/@Digits`
-     → `E_INVALID_FORMAT`, `@Size/@OptionalSize/@OptionalMinSize` → `E_INVALID_LENGTH`, `@Min/@Max/@DecimalMin/…`
+     → `E_INVALID_FORMAT`, `@Size/@OptionalMinSize` → `E_INVALID_LENGTH`, `@Min/@Max/@DecimalMin/…`
      → `E_OUT_OF_RANGE`, `@OptionalDate/@Past/@Future…` → `E_INVALID_DATE`, anything else → `E_INVALID_VALUE`).
 5. **Priority & grouping**: the generic code with the highest priority wins. All property paths with that code
    are de-duplicated and sorted in a deterministic natural order (`address.city < items[2].qty < items[10].qty < name`),
@@ -106,12 +106,13 @@ The higher the priority, the more it wins. Codes are defined in `GenericErrorCod
 
 | Annotation | null / "" / absent | Otherwise | Whitespace |
 |---|---|---|---|
-| `@OptionalSize(min, max)` | valid | `min <= length <= max` | **not trimmed**: `"   "` has length 3 and is checked like any other value |
-| `@OptionalMinSize(n)` | valid | `length >= n` | not trimmed |
+| `@OptionalMinSize(n)` | valid | `length >= n` | **not trimmed**: `"   "` has length 3 and is checked like any other value |
 | `@OptionalDate(pattern = "yyyy-MM-dd", when = ANY\|PAST\|PAST_OR_PRESENT\|FUTURE\|FUTURE_OR_PRESENT)` | valid | must parse with `ResolverStyle.STRICT` (`2024-02-30` and `2023-02-29` fail), plus the optional bound relative to today | not trimmed: `" "` and `" 2024-01-01"` are invalid |
 
 `@OptionalDate` defaults `ERA` while parsing, so the familiar `yyyy` works under STRICT resolution as well as `uuuu`.
-Misconfigured bounds (e.g. `min > max`) fail fast.
+For an upper bound on an optional string, add a plain `@Size(max = …)` next to `@OptionalMinSize`.
+`@Size` ignores `null`, and `""` counts as length 0, so it stays within `max`. Optional values therefore stay
+valid (see `UserVO.nickname`). Misconfigured values (e.g. `@OptionalMinSize(-1)`) fail fast.
 
 ## Adding a VO with custom codes
 
@@ -119,7 +120,7 @@ Misconfigured bounds (e.g. `min > max`) fail fast.
 public record CustomerVO(
         @NotBlank(message = "CUS_001") String name,
         @NotBlank(message = "CUS_002") @Email(message = "CUS_003") String email,
-        @OptionalSize(min = 3, max = 20, message = "CUS_004") String nickname,
+        @OptionalMinSize(value = 3, message = "CUS_004") @Size(max = 20, message = "CUS_004") String nickname,
         @OptionalDate(when = OptionalDate.Bound.PAST, message = "CUS_005") String birthDate,
         @NotNull @Valid AddressVO address,          // nested: paths like address.city
         @NotEmpty List<@Valid ItemVO> items) {      // list: paths like items[0].qty
@@ -203,9 +204,17 @@ HTTP/1.1 400
 
 ```
 
-### @OptionalSize
+### @OptionalMinSize (nickname too short)
 ```console
 $ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"a@b.co","age":30,"nickname":"ab"}'
+HTTP/1.1 400 
+{"errorCode":"E_INVALID_LENGTH","errorDescription":"Invalid length for fields: {nickname}"}
+
+```
+
+### @Size(max = 20) on the optional nickname (too long)
+```console
+$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"a@b.co","age":30,"nickname":"aaaaaaaaaaaaaaaaaaaaa"}'
 HTTP/1.1 400 
 {"errorCode":"E_INVALID_LENGTH","errorDescription":"Invalid length for fields: {nickname}"}
 
@@ -301,10 +310,10 @@ HTTP/1.1 400
 
 ## Tests
 
-* `validator-core` (91 tests): each custom annotation (null, "", absent, valid, invalid, whitespace, bounds,
+* `validator-core` (88 tests): each custom annotation (null, "", absent, valid, invalid, whitespace, bounds,
   custom pattern); empty / malformed / unknown-field / type-mismatch bodies; priority selection; grouping
   as `{a, b}` and de-duplication; nested and indexed list paths in numeric order; VO→generic mapping, fallback
   and a custom `ErrorCodeMapper`; path ordering; fail-fast mapping; `ValidationResult` invariants; thread safety;
   the auto-configuration (`ApplicationContextRunner`).
-* `springboot-init` (23 tests): `@SpringBootTest` + MockMvc for every endpoint scenario above, the
+* `springboot-init` (24 tests): `@SpringBootTest` + MockMvc for every endpoint scenario above, the
   `fail-on-unknown-properties=false` policy, and the binding of the `application.yml` mapping.

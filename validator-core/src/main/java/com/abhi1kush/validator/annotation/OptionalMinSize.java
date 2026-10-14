@@ -11,7 +11,9 @@ import java.lang.annotation.Target;
 
 /**
  * Minimum length for an <em>optional</em> {@link CharSequence}: {@code null} and {@code ""}
- * are valid, otherwise {@code length >= value}. Whitespace is not trimmed (see {@link OptionalSize}).
+ * are valid, otherwise {@code length >= value}. <b>Whitespace is not trimmed</b>: {@code "   "} is a
+ * non-empty value of length 3. Combine with {@code @Size(max)} for an upper bound ({@code @Size} ignores
+ * {@code null} and treats {@code ""} as length 0, so optional values stay valid).
  */
 @Documented
 @Constraint(validatedBy = OptionalMinSizeValidator.class)
