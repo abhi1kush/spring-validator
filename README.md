@@ -19,7 +19,7 @@ spring-validator/                 parent pom (packaging pom, imports spring-boot
 │   └── com.abhi1kush.validator
 │       ├── core/                 JsonRequestValidator, ValidationResult, GenericErrorCode
 │       ├── mapping/              ErrorCodeMapper, PropertiesErrorCodeMapper, ConstraintDefaults
-│       ├── annotation/           @OptionalMinSize, @OptionalDate + validators
+│       ├── annotation/           @ErrorField, @OptionalMinSize, @OptionalDate + validators
 │       └── autoconfigure/        JsonRequestValidatorAutoConfiguration, ValidatorProperties
 │       META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
 ├── api/                          sample REST controllers and VOs (depends on validator-core)
@@ -37,7 +37,7 @@ on its own. It returns a plain `int` HTTP status rather than a Spring MVC type, 
 ## Build & run
 
 ```bash
-./mvnw verify                                  # 127 tests: 100 in validator-core, 27 in springboot-init
+./mvnw verify                                  # 144 tests: 115 in validator-core, 29 in springboot-init
 ./mvnw -pl springboot-init spring-boot:run     # after ./mvnw install (or: java -jar springboot-init/target/springboot-init-0.1.0-SNAPSHOT.jar)
 ```
 
@@ -61,10 +61,13 @@ Requires JDK 21. The Maven wrapper pins Maven 3.9.9.
      (`ConstraintDefaults`: `@NotNull/@NotBlank/@NotEmpty` → `E_MANDATORY_MISSING`, `@Pattern/@Email/@Digits`
      → `E_INVALID_FORMAT`, `@Size`/`@Length` → `E_MAX_LENGTH_EXCEEDED` or `E_MIN_LENGTH_NOT_MET` (see *Length errors*), `@OptionalMinSize` → `E_MIN_LENGTH_NOT_MET`, `@Min/@Max/@DecimalMin/…`
      → `E_OUT_OF_RANGE`, `@OptionalDate/@Past/@Future…` → `E_INVALID_DATE`, anything else → `E_INVALID_VALUE`).
-5. **Priority & grouping**: the generic code with the highest priority wins. All property paths with that code
-   are de-duplicated and sorted in a deterministic natural order (`address.city < items[2].qty < items[10].qty < name`),
+5. **Field names**: each path segment is shown under its API name: `@ErrorField`, else the Jackson
+   JSON name, else the Java name (see *Field names in errors*).
+6. **Priority & grouping**: the generic code with the highest priority wins. All property paths with that code
+   are de-duplicated and sorted by their **resolved** names in a deterministic natural order
+   (`items[2].qty < items[10].qty < name < shipping_address.city`),
    then inserted into the code's template as `{a, b}`.
-6. **Result**: an immutable `record ValidationResult<T>(Optional<T> vo, Optional<String> errorCode,
+7. **Result**: an immutable `record ValidationResult<T>(Optional<T> vo, Optional<String> errorCode,
    Optional<String> errorDescription, Optional<Integer> httpStatusCode)`. Its canonical constructor enforces
    "either vo or all error fields".
 
@@ -103,6 +106,49 @@ The higher the priority, the more it wins. Codes are defined in `GenericErrorCod
 | 300      | `E_OUT_OF_RANGE`      | 400  | `Value out of range for fields: {fields}` |
 | 100      | `E_INVALID_VALUE`     | 400  | `Invalid value for fields: {fields}`      |
 
+## Field names in errors
+
+Errors never show Java variable names. A Java name is an implementation detail, and exposing it would tie the
+public error contract to the code: renaming a variable would change the API. Each path segment is resolved
+separately:
+
+1. **`@ErrorField("name")`** on the field, record component or getter. It applies to **every** constraint on
+   that property (Jakarta, Hibernate or custom) and to Jackson binding errors.
+2. Otherwise, the **Jackson JSON property name**, read from the configured `ObjectMapper`'s introspection
+   (`BeanDescription` / `BeanPropertyDefinition`). This honours `@JsonProperty` and the global
+   `spring.jackson.property-naming-strategy` (e.g. `SNAKE_CASE`), so errors match the API contract
+   automatically.
+3. Otherwise, the Java name. This only happens for properties Jackson cannot see.
+
+Nested beans, list, array and map elements are followed through their declared generic types, giving paths like
+`shipping_address.city`, `items[1].sku_code`, `tag_list[0]` and `extra[key]`. The resolved names are cached per
+class in a `ConcurrentHashMap` (one resolver per validator/mapper). Only public reflection read APIs are used.
+Binding errors are consistent with this: unknown-field and type-mismatch paths come from Jackson (JSON names),
+and a segment that maps to a property is replaced by its `@ErrorField` name if it has one.
+
+**Why no `field` attribute on each constraint, and why not in the message?** A single property-level
+`@ErrorField` covers all of a field's constraints, including Jakarta's own (`@NotBlank` has no field attribute),
+and binding errors as well. Per-constraint attributes would repeat the name on every constraint, could disagree
+with each other, and would only work for our own annotations. Encoding the name into `message` would mix the VO
+code with presentation. So `@OptionalMinSize` and `@OptionalDate` intentionally have **no** `field` attribute.
+
+In the samples, the VOs use snake_case API names via `@JsonProperty` (`order_id`, `shipping_address`,
+`zip_code`, `sku_code`, `nick_name`, `birth_date` …). `UserVO.phone` keeps the JSON property `phone` but is
+reported as `mobile_number` through `@ErrorField`.
+
+**Renaming a Java variable does not change the error output.** These two VOs produce identical errors for every
+input. `FieldNameResolutionTest.RenameProof` checks empty, partial, type-mismatch, invalid-date and unknown-field bodies:
+
+```java
+record CustomerV1(@JsonProperty("customer_name") @NotBlank String name,
+                  @JsonProperty("mobile") @ErrorField("mobile_number") @NotBlank String phone, ...) { }
+record CustomerV2(@JsonProperty("customer_name") @NotBlank String fullName,
+                  @JsonProperty("mobile") @ErrorField("mobile_number") @NotBlank String mobilePhoneNumber, ...) { }
+
+validate("{}", CustomerV1.class)  // E_MANDATORY_MISSING: Mandatory fields missing: {customer_name, mobile_number}
+validate("{}", CustomerV2.class)  // E_MANDATORY_MISSING: Mandatory fields missing: {customer_name, mobile_number}
+```
+
 ## Length errors
 
 Length violations come in two categories:
@@ -140,12 +186,12 @@ valid (see `UserVO.nickname`). Misconfigured values (e.g. `@OptionalMinSize(-1)`
 
 ```java
 public record CustomerVO(
-        @NotBlank(message = "CUS_001") String name,
+        @JsonProperty("customer_name") @NotBlank(message = "CUS_001") String name,
         @NotBlank(message = "CUS_002") @Email(message = "CUS_003") String email,
         @OptionalMinSize(value = 3, message = "CUS_004") @Size(max = 20, message = "CUS_006") String nickname,
-        @OptionalDate(when = OptionalDate.Bound.PAST, message = "CUS_005") String birthDate,
-        @NotNull @Valid AddressVO address,          // nested: paths like address.city
-        @NotEmpty List<@Valid ItemVO> items) {      // list: paths like items[0].qty
+        @JsonProperty("birth_date") @OptionalDate(when = OptionalDate.Bound.PAST, message = "CUS_005") String birthDate,
+        @JsonProperty("home_address") @NotNull @Valid AddressVO address,   // nested: home_address.city
+        @NotEmpty List<@Valid ItemVO> items) {      // list: items[0].sku_code
 }
 
 @PostMapping("/api/customers")
@@ -198,9 +244,9 @@ These were captured from `./mvnw -pl springboot-init spring-boot:run` on 2026-10
 
 ### Valid user → 201
 ```console
-$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"Abhishek","email":"abhi@example.com","phone":"+919876543210","age":30,"nickname":"abhi","birthDate":"1995-06-15"}'
+$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"Abhishek","email":"abhi@example.com","phone":"+919876543210","age":30,"nick_name":"abhi","birth_date":"1995-06-15"}'
 HTTP/1.1 201 
-{"name":"Abhishek","email":"abhi@example.com","phone":"+919876543210","age":30,"nickname":"abhi","birthDate":"1995-06-15"}
+{"name":"Abhishek","email":"abhi@example.com","phone":"+919876543210","age":30,"nick_name":"abhi","birth_date":"1995-06-15"}
 
 ```
 
@@ -214,39 +260,47 @@ HTTP/1.1 400
 
 ### Priority: format beats length and range
 ```console
-$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"not-an-email","phone":"12","age":10,"nickname":"ab"}'
+$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"not-an-email","phone":"12","age":10,"nick_name":"ab"}'
 HTTP/1.1 400 
-{"errorCode":"E_INVALID_FORMAT","errorDescription":"Invalid format for fields: {email, phone}"}
+{"errorCode":"E_INVALID_FORMAT","errorDescription":"Invalid format for fields: {email, mobile_number}"}
+
+```
+
+### @ErrorField override: phone is reported as mobile_number
+```console
+$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"a@b.co","phone":"12","age":30}'
+HTTP/1.1 400 
+{"errorCode":"E_INVALID_FORMAT","errorDescription":"Invalid format for fields: {mobile_number}"}
 
 ```
 
 ### @OptionalDate strict (2024-02-30)
 ```console
-$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"a@b.co","age":30,"birthDate":"2024-02-30"}'
+$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"a@b.co","age":30,"birth_date":"2024-02-30"}'
 HTTP/1.1 400 
-{"errorCode":"E_INVALID_DATE","errorDescription":"Invalid date for fields: {birthDate}"}
+{"errorCode":"E_INVALID_DATE","errorDescription":"Invalid date for fields: {birth_date}"}
 
 ```
 
 ### @OptionalMinSize: nickname too short → E_MIN_LENGTH_NOT_MET
 ```console
-$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"a@b.co","age":30,"nickname":"ab"}'
+$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"a@b.co","age":30,"nick_name":"ab"}'
 HTTP/1.1 400 
-{"errorCode":"E_MIN_LENGTH_NOT_MET","errorDescription":"Length is less than allowed length for fields: {nickname}"}
+{"errorCode":"E_MIN_LENGTH_NOT_MET","errorDescription":"Length is less than allowed length for fields: {nick_name}"}
 
 ```
 
 ### @Size(max): nickname too long → E_MAX_LENGTH_EXCEEDED
 ```console
-$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"a@b.co","age":30,"nickname":"aaaaaaaaaaaaaaaaaaaaa"}'
+$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"A","email":"a@b.co","age":30,"nick_name":"aaaaaaaaaaaaaaaaaaaaa"}'
 HTTP/1.1 400 
-{"errorCode":"E_MAX_LENGTH_EXCEEDED","errorDescription":"Max length exceeded for fields: {nickname}"}
+{"errorCode":"E_MAX_LENGTH_EXCEEDED","errorDescription":"Max length exceeded for fields: {nick_name}"}
 
 ```
 
 ### Too long + too short at once: max wins
 ```console
-$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","email":"a@b.co","age":30,"nickname":"ab"}'
+$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","email":"a@b.co","age":30,"nick_name":"ab"}'
 HTTP/1.1 400 
 {"errorCode":"E_MAX_LENGTH_EXCEEDED","errorDescription":"Max length exceeded for fields: {name}"}
 
@@ -254,9 +308,9 @@ HTTP/1.1 400
 
 ### Max length grouped
 ```console
-$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","email":"a@b.co","age":30,"nickname":"aaaaaaaaaaaaaaaaaaaaa"}'
+$ curl -s -i -X POST localhost:8080/api/users -H 'Content-Type: application/json' -d '{"name":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","email":"a@b.co","age":30,"nick_name":"aaaaaaaaaaaaaaaaaaaaa"}'
 HTTP/1.1 400 
-{"errorCode":"E_MAX_LENGTH_EXCEEDED","errorDescription":"Max length exceeded for fields: {name, nickname}"}
+{"errorCode":"E_MAX_LENGTH_EXCEEDED","errorDescription":"Max length exceeded for fields: {name, nick_name}"}
 
 ```
 
@@ -302,31 +356,31 @@ HTTP/1.1 400
 
 ### Valid order → 201
 ```console
-$ curl -s -i -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{"orderId":"ORD-123456","customerEmail":"abhi@example.com","shippingAddress":{"street":"MG Road","city":"Bengaluru","zip":"560001"},"items":[{"sku":"SKU-1","qty":2,"price":499.99},{"sku":"SKU-2","qty":1,"price":99.50}],"deliveryDate":"2030-01-01","notes":"Leave at the door"}'
+$ curl -s -i -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{"order_id":"ORD-123456","customer_email":"abhi@example.com","shipping_address":{"street":"MG Road","city":"Bengaluru","zip_code":"560001"},"items":[{"sku_code":"SKU-1","qty":2,"price":499.99},{"sku_code":"SKU-2","qty":1,"price":99.50}],"delivery_date":"2030-01-01","notes":"Leave at the door"}'
 HTTP/1.1 201 
-{"orderId":"ORD-123456","customerEmail":"abhi@example.com","shippingAddress":{"street":"MG Road","city":"Bengaluru","zip":"560001"},"items":[{"sku":"SKU-1","qty":2,"price":499.99},{"sku":"SKU-2","qty":1,"price":99.50}],"deliveryDate":"2030-01-01","notes":"Leave at the door"}
+{"order_id":"ORD-123456","customer_email":"abhi@example.com","shipping_address":{"street":"MG Road","city":"Bengaluru","zip_code":"560001"},"items":[{"sku_code":"SKU-1","qty":2,"price":499.99},{"sku_code":"SKU-2","qty":1,"price":99.50}],"delivery_date":"2030-01-01","notes":"Leave at the door"}
 
 ```
 
 ### Nested + list paths grouped
 ```console
-$ curl -s -i -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{"orderId":"ORD-123456","customerEmail":"a@b.co","shippingAddress":{"street":"MG Road","zip":"560001"},"items":[{"sku":"A","qty":1,"price":1},{"qty":1,"price":1},{"sku":"C","price":1}]}'
+$ curl -s -i -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{"order_id":"ORD-123456","customer_email":"a@b.co","shipping_address":{"street":"MG Road","zip_code":"560001"},"items":[{"sku_code":"A","qty":1,"price":1},{"qty":1,"price":1},{"sku_code":"C","price":1}]}'
 HTTP/1.1 400 
-{"errorCode":"E_MANDATORY_MISSING","errorDescription":"Mandatory fields missing: {items[1].sku, items[2].qty, shippingAddress.city}"}
+{"errorCode":"E_MANDATORY_MISSING","errorDescription":"Mandatory fields missing: {items[1].sku_code, items[2].qty, shipping_address.city}"}
 
 ```
 
 ### Nested format errors
 ```console
-$ curl -s -i -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{"orderId":"123","customerEmail":"a@b.co","shippingAddress":{"street":"MG Road","city":"Pune","zip":"56A"},"items":[{"sku":"A","qty":1,"price":1}]}'
+$ curl -s -i -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{"order_id":"123","customer_email":"a@b.co","shipping_address":{"street":"MG Road","city":"Pune","zip_code":"56A"},"items":[{"sku_code":"A","qty":1,"price":1}]}'
 HTTP/1.1 400 
-{"errorCode":"E_INVALID_FORMAT","errorDescription":"Invalid format for fields: {orderId, shippingAddress.zip}"}
+{"errorCode":"E_INVALID_FORMAT","errorDescription":"Invalid format for fields: {order_id, shipping_address.zip_code}"}
 
 ```
 
 ### List element out of range
 ```console
-$ curl -s -i -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{"orderId":"ORD-123456","customerEmail":"a@b.co","shippingAddress":{"street":"MG Road","city":"Pune","zip":"411001"},"items":[{"sku":"A","qty":0,"price":1}]}'
+$ curl -s -i -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{"order_id":"ORD-123456","customer_email":"a@b.co","shipping_address":{"street":"MG Road","city":"Pune","zip_code":"411001"},"items":[{"sku_code":"A","qty":0,"price":1}]}'
 HTTP/1.1 400 
 {"errorCode":"E_OUT_OF_RANGE","errorDescription":"Value out of range for fields: {items[0].qty}"}
 
@@ -334,7 +388,7 @@ HTTP/1.1 400
 
 ### Nested type mismatch
 ```console
-$ curl -s -i -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{"orderId":"ORD-123456","customerEmail":"a@b.co","shippingAddress":{"street":"MG Road","city":"Pune","zip":"411001"},"items":[{"sku":"A","qty":1,"price":1},{"sku":"B","qty":"one","price":1}]}'
+$ curl -s -i -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{"order_id":"ORD-123456","customer_email":"a@b.co","shipping_address":{"street":"MG Road","city":"Pune","zip_code":"411001"},"items":[{"sku_code":"A","qty":1,"price":1},{"sku_code":"B","qty":"one","price":1}]}'
 HTTP/1.1 400 
 {"errorCode":"E_TYPE_MISMATCH","errorDescription":"Invalid type for fields: {items[1].qty}"}
 
@@ -342,7 +396,7 @@ HTTP/1.1 400
 
 ### Empty items list
 ```console
-$ curl -s -i -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{"orderId":"ORD-123456","customerEmail":"a@b.co","shippingAddress":{"street":"MG Road","city":"Pune","zip":"411001"},"items":[]}'
+$ curl -s -i -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{"order_id":"ORD-123456","customer_email":"a@b.co","shipping_address":{"street":"MG Road","city":"Pune","zip_code":"411001"},"items":[]}'
 HTTP/1.1 400 
 {"errorCode":"E_MANDATORY_MISSING","errorDescription":"Mandatory fields missing: {items}"}
 
@@ -350,10 +404,13 @@ HTTP/1.1 400
 
 ## Tests
 
-* `validator-core` (100 tests): each custom annotation (null, "", absent, valid, invalid, whitespace, bounds,
+* `validator-core` (115 tests): each custom annotation (null, "", absent, valid, invalid, whitespace, bounds,
   custom pattern); empty / malformed / unknown-field / type-mismatch bodies; priority selection; grouping
   as `{a, b}` and de-duplication; nested and indexed list paths in numeric order; VO→generic mapping, fallback
   and a custom `ErrorCodeMapper`; max/min length categories (too long, too short, both at once, grouping per category, `@Size` and `@Length` with both bounds, empty string, lists, maps, arrays, VO-code override); path ordering; fail-fast mapping; `ValidationResult` invariants; thread safety;
   the auto-configuration (`ApplicationContextRunner`).
-* `springboot-init` (27 tests): `@SpringBootTest` + MockMvc for every endpoint scenario above, the
+* field names (`FieldNameResolutionTest`): rename-proof VO pair, `@ErrorField` > `@JsonProperty` > Java
+  name precedence, getter-level `@ErrorField`, nested records, Lombok list elements, container elements and
+  map values, global `SNAKE_CASE`, Jackson binding errors, sorting by resolved names, concurrent cache use.
+* `springboot-init` (29 tests): `@SpringBootTest` + MockMvc for every endpoint scenario above, the
   `fail-on-unknown-properties=false` policy, and the binding of the `application.yml` mapping.
