@@ -55,7 +55,7 @@ class JsonRequestValidatorTest {
             "USR_003", "MANDATORY_MISSING",
             "USR_004", "E_INVALID_FORMAT",
             "USR_005", "E_INVALID_FORMAT",
-            "USR_002", "E_INVALID_LENGTH");
+            "USR_002", "E_MAX_LENGTH_EXCEEDED");
 
     private final JsonRequestValidator validator = TestSupport.jsonValidator(MAPPING, true);
 
@@ -161,7 +161,7 @@ class JsonRequestValidatorTest {
         void lengthOutranksRange() {
             assertFailure(validator.validate(
                             "{\"name\":\"a\",\"email\":\"a@b.com\",\"age\":500,\"code\":\"toolong\"}", User.class),
-                    "E_INVALID_LENGTH", "Invalid length for fields: {code}", 400);
+                    "E_MAX_LENGTH_EXCEEDED", "Max length exceeded for fields: {code}", 400);
         }
 
         @Test

@@ -26,8 +26,14 @@ public enum GenericErrorCode {
     INVALID_FORMAT("E_INVALID_FORMAT", 500, "Invalid format for fields: {fields}", 400),
     /** A date string cannot be parsed or violates past/future bounds. */
     INVALID_DATE("E_INVALID_DATE", 450, "Invalid date for fields: {fields}", 400),
-    /** A string or collection length is outside the allowed range. */
-    INVALID_LENGTH("E_INVALID_LENGTH", 400, "Invalid length for fields: {fields}", 400),
+    /**
+     * A string, collection, map or array is longer than allowed ({@code @Size(max)}, {@code @Length(max)}).
+     * Ranked just above {@link #MIN_LENGTH_NOT_MET}: an over-long value is the stronger signal
+     * (truncation or abuse), and a fixed order keeps the selection deterministic.
+     */
+    MAX_LENGTH_EXCEEDED("E_MAX_LENGTH_EXCEEDED", 410, "Max length exceeded for fields: {fields}", 400),
+    /** A string, collection, map or array is shorter than allowed ({@code @Size(min)}, {@code @OptionalMinSize}). */
+    MIN_LENGTH_NOT_MET("E_MIN_LENGTH_NOT_MET", 400, "Length is less than allowed length for fields: {fields}", 400),
     /** A numeric value is outside the allowed range. */
     OUT_OF_RANGE("E_OUT_OF_RANGE", 300, "Value out of range for fields: {fields}", 400),
     /** Fallback for any other constraint violation. */

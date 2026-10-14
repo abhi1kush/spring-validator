@@ -67,8 +67,8 @@ class OptionalMinSizeValidatorTest {
     @Test
     void invalidValueMapsToInvalidLength() {
         var r = TestSupport.jsonValidator(Map.of(), true).validate("{\"value\":\"ab\"}", Vo.class);
-        assertThat(r.errorCode()).contains("E_INVALID_LENGTH");
-        assertThat(r.errorDescription()).contains("Invalid length for fields: {value}");
+        assertThat(r.errorCode()).contains("E_MIN_LENGTH_NOT_MET");
+        assertThat(r.errorDescription()).contains("Length is less than allowed length for fields: {value}");
     }
 
     @Test
