@@ -8,7 +8,7 @@ import java.util.stream.Collectors;
 
 /**
  * {@link ErrorCodeMapper} backed by an immutable map, typically
- * {@code validator.error-mapping.*} from {@code application.yml}.
+ * {@code spring-validator.error-mapping.*} from {@code application.yml}.
  * Values may be wire codes ({@code E_MANDATORY_MISSING}) or enum names ({@code MANDATORY_MISSING}).
  */
 public final class PropertiesErrorCodeMapper implements ErrorCodeMapper {

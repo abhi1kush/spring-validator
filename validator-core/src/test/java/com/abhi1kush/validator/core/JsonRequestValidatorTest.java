@@ -2,7 +2,6 @@ package com.abhi1kush.validator.core;
 
 import com.abhi1kush.validator.TestSupport;
 import com.abhi1kush.validator.mapping.ErrorCodeMapper;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.Max;
@@ -260,7 +259,7 @@ class JsonRequestValidatorTest {
         void customErrorCodeMapperBeanIsUsed() {
             ErrorCodeMapper mapper = code -> code.startsWith("XYZ_") ? Optional.of(GenericErrorCode.OUT_OF_RANGE)
                     : Optional.empty();
-            JsonRequestValidator v = new JsonRequestValidator(new ObjectMapper(), TestSupport.VALIDATOR, mapper, true);
+            JsonRequestValidator v = JsonRequestValidator.builder().errorCodeMapper(mapper).build();
             assertFailure(v.validate("{\"a\":\"\"}", Unmapped.class),
                     "E_OUT_OF_RANGE", "Value out of range for fields: {a}", 400);
         }

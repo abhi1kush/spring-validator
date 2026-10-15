@@ -9,20 +9,23 @@
     </parent>
     <artifactId>validator-core</artifactId>
     <name>validator-core</name>
-    <description>Reusable JSON body validator with Spring Boot auto-configuration</description>
+    <description>Reusable, isolated JSON body validator; opt-in Spring integration via @EnableJsonRequestValidator</description>
 
     <dependencies>
+        <!-- Required at runtime: plain Java usage needs only these two -->
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-autoconfigure</artifactId>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-validation</artifactId>
+            <groupId>org.hibernate.validator</groupId>
+            <artifactId>hibernate-validator</artifactId>
         </dependency>
+        <!-- Optional Spring integration (@EnableJsonRequestValidator); not pulled in transitively -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-json</artifactId>
+            <artifactId>spring-boot</artifactId>
+            <optional>true</optional>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

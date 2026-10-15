@@ -1,8 +1,10 @@
 # spring-validator
 
-A reusable JSON request validator for Spring Boot 3.5 / Java 21. It parses a raw request body with the
-Spring-managed Jackson `ObjectMapper`, validates it with Jakarta Bean Validation (Hibernate Validator), and
+A reusable JSON request validator for Spring Boot 3.5 / Java 21. It parses a raw request body with a
+private copy of a Jackson `ObjectMapper`, validates it with Jakarta Bean Validation (Hibernate Validator), and
 returns **one** prioritised, generic error, with every affected field grouped as `{a, b}`.
+It is **opt-in and isolated**: adding the jar to an application changes nothing until you enable it (see
+*Using in a shared project*).
 
 ```java
 ValidationResult<UserVO> r = jsonRequestValidator.validate(requestBody, UserVO.class);
@@ -15,29 +17,29 @@ ValidationResult<UserVO> r = jsonRequestValidator.validate(requestBody, UserVO.c
 
 ```
 spring-validator/                 parent pom (packaging pom, imports spring-boot-dependencies 3.5.16)
-├── validator-core/               the reusable library + Spring Boot auto-configuration
+├── validator-core/               the reusable library (plain Java) + opt-in Spring integration
 │   └── com.abhi1kush.validator
 │       ├── core/                 JsonRequestValidator, ValidationResult, GenericErrorCode
 │       ├── mapping/              ErrorCodeMapper, PropertiesErrorCodeMapper, ConstraintDefaults
 │       ├── annotation/           @ErrorField, @OptionalMinSize, @OptionalDate + validators
-│       └── autoconfigure/        JsonRequestValidatorAutoConfiguration, ValidatorProperties
-│       META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
+│       └── spring/               @EnableJsonRequestValidator, JsonRequestValidatorConfiguration,
+│                                 JsonRequestValidatorProperties   (no auto-configuration registration)
 ├── api/                          sample REST controllers and VOs (depends on validator-core)
 │   └── com.abhi1kush.api         controller/ (UserController, OrderController), vo/, web/ (ErrorResponse)
 └── springboot-init/              @SpringBootApplication main class + application.yml (depends on api, validator-core)
 ```
 
 **Why a separate `validator-core` module?** The validator has nothing to do with these particular endpoints.
-As its own jar with an auto-configuration, any Spring Boot JSON API can add one dependency and inject
-`JsonRequestValidator`. It does not pull in web or controller code (it depends only on
-`spring-boot-autoconfigure`, Jackson and `spring-boot-starter-validation`), and it can be versioned and tested
-on its own. It returns a plain `int` HTTP status rather than a Spring MVC type, so it also works outside servlet stacks.
+As its own jar, any JSON API can add one dependency and either build a `JsonRequestValidator` in plain Java
+or opt in with `@EnableJsonRequestValidator`. It does not pull in web or controller code: its only runtime
+dependencies are `jackson-databind` and `hibernate-validator`, and Spring Boot is an *optional* dependency. It can
+be versioned and tested on its own. It returns a plain `int` HTTP status rather than a Spring MVC type, so it also works outside servlet stacks.
 `api` holds the controllers and VOs, and `springboot-init` only bootstraps and configures the application.
 
 ## Build & run
 
 ```bash
-./mvnw verify                                  # 144 tests: 115 in validator-core, 29 in springboot-init
+./mvnw verify                                  # 157 tests: 127 in validator-core, 30 in springboot-init
 ./mvnw -pl springboot-init spring-boot:run     # after ./mvnw install (or: java -jar springboot-init/target/springboot-init-0.1.0-SNAPSHOT.jar)
 ```
 
@@ -46,8 +48,8 @@ Requires JDK 21. The Maven wrapper pins Maven 3.9.9.
 ## Design
 
 1. **Body checks**: a `null` or blank body, or the JSON literal `null`, gives `E_EMPTY_BODY`.
-2. **Parsing** uses `objectMapper.readerFor(type)` with `FAIL_ON_UNKNOWN_PROPERTIES` switched per reader. The shared
-   `ObjectMapper` is never mutated. Jackson exceptions map like this:
+2. **Parsing** uses `objectMapper.readerFor(type)` with `FAIL_ON_UNKNOWN_PROPERTIES` switched per reader. The library's
+   own `ObjectMapper` copy is never shared. Jackson exceptions map like this:
    * `UnrecognizedPropertyException` gives `E_UNKNOWN_FIELD` with the full path (e.g. `{address.planet}`)
    * `MismatchedInputException` / `InvalidFormatException` give `E_TYPE_MISMATCH` with the path (e.g. `{items[1].qty}`, root `{$}`)
    * any other parse error gives `E_MALFORMED_JSON`
@@ -77,7 +79,7 @@ Other points:
   and the constraint validators hold only immutable state after `initialize`. A concurrency test covers this.
 * **No reflection hacks**: everything goes through the standard Jackson and Jakarta APIs (message template and
   constraint descriptor).
-* **Constructor injection** is used everywhere. The auto-configuration uses `@ConditionalOnMissingBean`, so every bean can be replaced.
+* **Constructor injection** is used everywhere. Nothing is registered unless explicitly enabled.
 
 ### Why the VO code goes in `message`
 
@@ -205,9 +207,13 @@ see `OrderItemVO`), or `@Data @NoArgsConstructor` if it must be mutable.
 
 ## Configuring the mapping
 
+With `@EnableJsonRequestValidator`, settings live under the namespaced `spring-validator.*` prefix and are read
+only when the annotation is present:
+
 ```yaml
-validator:
+spring-validator:
   fail-on-unknown-properties: true      # false = ignore unknown JSON properties
+  use-application-object-mapper: true   # copy the app's unique ObjectMapper as a template (naming strategy, modules)
   error-mapping:                        # VO code -> generic code (wire code or enum name)
     CUS_001: E_MANDATORY_MISSING
     CUS_003: INVALID_FORMAT
@@ -215,8 +221,9 @@ validator:
     CUS_006: MAX_LENGTH_EXCEEDED
 ```
 
-An unknown generic code in the mapping stops application startup. To use another source (database, per-tenant
-rules …), declare a bean and the properties mapper backs off:
+An unknown generic code in the mapping makes the validator (and the enabled context) fail fast at startup.
+To use another source (database, per-tenant rules …), declare a single bean of the library type
+`ErrorCodeMapper`; it takes precedence over `error-mapping`:
 
 ```java
 @Bean
@@ -225,10 +232,10 @@ ErrorCodeMapper errorCodeMapper(MyRepo repo) {
 }
 ```
 
-## Using it in another application
+## Using in a shared project
 
-Add the dependency and inject `JsonRequestValidator`. The auto-configuration in `AutoConfiguration.imports` does
-the rest:
+`validator-core` is built to sit in a shared multi-module application **without any side effects** on the
+other modules.
 
 ```xml
 <dependency>
@@ -237,6 +244,79 @@ the rest:
     <version>0.1.0-SNAPSHOT</version>
 </dependency>
 ```
+
+**Option 1: Spring, opt in explicitly** in the module that needs it:
+
+```java
+@EnableJsonRequestValidator          // registers exactly one bean: jsonRequestValidator
+@Configuration
+class OrdersModuleConfig { }
+
+@RestController
+class OrderController {
+    private final JsonRequestValidator validator;   // constructor injection
+    OrderController(JsonRequestValidator validator) { this.validator = validator; }
+}
+```
+
+**Option 2: plain Java** (no Spring needed at all), e.g. for libraries, batch jobs or tests:
+
+```java
+try (JsonRequestValidator validator = JsonRequestValidator.builder()
+        .objectMapper(someMapper)                          // optional; copied, never modified
+        .errorMapping(Map.of("USR_001", "E_MANDATORY_MISSING"))
+        .failOnUnknownProperties(true)
+        .build()) {
+    ValidationResult<UserVO> r = validator.validate(body, UserVO.class);
+}
+```
+
+**Option 3: several instances**, e.g. one per module with its own mapping and prefix, injected by qualifier:
+
+```java
+@Bean JsonRequestValidator ordersValidator(Environment env, ObjectMapper mapper) {
+    return JsonRequestValidatorProperties.bind(env, "orders.validator").toBuilder().objectMapper(mapper).build();
+}
+@Bean JsonRequestValidator usersValidator(Environment env) {
+    return JsonRequestValidatorProperties.bind(env, "users.validator").toBuilder().build();
+}
+// inject with @Qualifier("ordersValidator") / @Qualifier("usersValidator")
+```
+
+Spring calls `close()` on these beans at shutdown, so each one's private `ValidatorFactory` is released.
+
+### Isolation guarantees
+
+`IsolationTest` and `PlainJavaUsageTest` check each of these.
+
+| Concern | Behaviour |
+|---|---|
+| Auto-configuration | **None.** There is no `AutoConfiguration.imports` and no `spring.factories`. Adding the jar registers nothing. |
+| Component scanning | The library has no `@Component`, `@Configuration` or `@ControllerAdvice`. Even scanning `com.abhi1kush.validator` registers nothing; the imported configuration is deliberately not `@Configuration`. |
+| Configuration properties | They use the namespaced `spring-validator.*` prefix (not the generic `validator.*`). They are bound with a `Binder` only when enabled. They are never registered as a bean, and no Boot properties infrastructure beans are added. |
+| Beans when enabled | Exactly `jsonRequestValidator` (type `JsonRequestValidator`) plus the imported configuration class. There are no `ObjectMapper`, `Validator`, `LocalValidatorFactoryBean` or `MessageSource` beans, no `@Primary` and no `@ConditionalOnMissingBean`. |
+| Application `ObjectMapper` | Never modified, and never exposed as a bean by the library. It is used only as a template and `copy()`'d, when exactly one exists and `use-application-object-mapper` is true. Later changes to the app mapper do not leak in. |
+| Application Jakarta `Validator` | Never used. Each instance creates its **own** Hibernate `ValidatorFactory` (with `ParameterMessageInterpolator`, so no EL is needed) and closes it on `close()`. |
+| Static or global state | There is no static `ValidatorFactory` and no system properties are set. The field-name cache belongs to each instance. |
+| Error translation | HTTP translation (`ValidationResponses`, `ErrorResponse`) lives in the `api` module, not in the core. |
+| Classpath | Runtime dependencies are `jackson-databind` and `hibernate-validator`; Spring Boot is `optional`. One caveat: Spring Boot's **own** `ValidationAutoConfiguration` activates whenever any Bean Validation provider is on the classpath. Most apps already have one (e.g. via `spring-boot-starter-validation`); if yours does not, adding Hibernate Validator through this jar lets Boot create its default `Validator`. |
+
+### Migration from the auto-configured version
+
+The following changes are **breaking**:
+
+1. Add `@EnableJsonRequestValidator` to your application or module configuration. The validator is no longer
+   auto-configured.
+2. Rename the property prefix `validator.*` to `spring-validator.*`.
+3. `ErrorCodeMapper` and `ValidatorProperties` are no longer beans; `ValidatorProperties` is now
+   `JsonRequestValidatorProperties` in `com.abhi1kush.validator.spring`. A custom `ErrorCodeMapper` bean is still
+   picked up if it is unique.
+4. The public constructor of `JsonRequestValidator` is replaced by `JsonRequestValidator.builder()`. The class is now
+   `final` and `AutoCloseable`.
+5. The application's Jakarta `Validator` bean is no longer used. Custom constraint validators that need Spring
+   injection are therefore not supported; the library's own validators need none.
+6. `validator-core` no longer brings `spring-boot-starter-validation` or `spring-boot-autoconfigure` transitively.
+   Add them yourself if your application relied on that.
 
 ## Sample endpoints: real curl output
 
@@ -404,13 +484,19 @@ HTTP/1.1 400
 
 ## Tests
 
-* `validator-core` (115 tests): each custom annotation (null, "", absent, valid, invalid, whitespace, bounds,
+* `validator-core` (127 tests): each custom annotation (null, "", absent, valid, invalid, whitespace, bounds,
   custom pattern); empty / malformed / unknown-field / type-mismatch bodies; priority selection; grouping
   as `{a, b}` and de-duplication; nested and indexed list paths in numeric order; VO→generic mapping, fallback
   and a custom `ErrorCodeMapper`; max/min length categories (too long, too short, both at once, grouping per category, `@Size` and `@Length` with both bounds, empty string, lists, maps, arrays, VO-code override); path ordering; fail-fast mapping; `ValidationResult` invariants; thread safety;
-  the auto-configuration (`ApplicationContextRunner`).
+  plain-Java builder usage (copy semantics, multiple instances, close).
+* isolation (`IsolationTest`, `ApplicationContextRunner` with the app's own `ObjectMapper` and `Validator`): no
+  auto-configuration, nothing registered when not enabled (even with component scanning or invalid
+  `spring-validator.*` values), only library-typed beans when enabled, the same app bean instances and settings,
+  a private mapper copy, a second module's context unaffected, per-module instances via qualifiers, the factory
+  closed on shutdown, and system properties unchanged.
 * field names (`FieldNameResolutionTest`): rename-proof VO pair, `@ErrorField` > `@JsonProperty` > Java
   name precedence, getter-level `@ErrorField`, nested records, Lombok list elements, container elements and
   map values, global `SNAKE_CASE`, Jackson binding errors, sorting by resolved names, concurrent cache use.
-* `springboot-init` (29 tests): `@SpringBootTest` + MockMvc for every endpoint scenario above, the
-  `fail-on-unknown-properties=false` policy, and the binding of the `application.yml` mapping.
+* `springboot-init` (30 tests): `@SpringBootTest` + MockMvc for every endpoint scenario above, the
+  `fail-on-unknown-properties=false` policy, the `spring-validator.*` binding, and Boot's `ObjectMapper`/`Validator`
+  left at their defaults.

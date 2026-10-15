@@ -2,6 +2,7 @@ package com.abhi1kush.validator.core;
 
 import com.abhi1kush.validator.mapping.ConstraintDefaults;
 import com.abhi1kush.validator.mapping.ErrorCodeMapper;
+import com.abhi1kush.validator.mapping.PropertiesErrorCodeMapper;
 import com.fasterxml.jackson.core.JacksonException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -11,10 +12,15 @@ import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import com.fasterxml.jackson.databind.exc.PropertyBindingException;
 import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Validation;
 import jakarta.validation.Validator;
+import jakarta.validation.ValidatorFactory;
+import org.hibernate.validator.HibernateValidator;
+import org.hibernate.validator.messageinterpolation.ParameterMessageInterpolator;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
@@ -40,33 +46,60 @@ import java.util.stream.Collectors;
  *       violating that code are listed, sorted and de-duplicated, as {@code {a, b}}.</li>
  * </ol>
  *
- * <p>This class is immutable and thread-safe (Jackson {@link ObjectReader} and Jakarta
- * {@link Validator} are both thread-safe).
+ * <h2>Isolation</h2>
+ * An instance owns <em>private</em> resources: a {@linkplain ObjectMapper#copy() copy} of any mapper passed to the
+ * builder (or an internally built one) and its own Hibernate {@link ValidatorFactory}. Neither is shared or exposed,
+ * so creating a validator never changes an application's {@code ObjectMapper}, its default Jakarta
+ * {@code Validator}, system properties or any other global state. {@link #close()} releases the factory; in Spring,
+ * {@code close()} is called automatically when the context shuts down.
+ *
+ * <p>Instances are immutable and thread-safe. Create as many as needed (e.g. one per module with its own mapping):
+ * <pre>{@code
+ * JsonRequestValidator v = JsonRequestValidator.builder()
+ *         .objectMapper(appMapper)                       // optional, copied
+ *         .errorMapping(Map.of("USR_001", "E_MANDATORY_MISSING"))
+ *         .failOnUnknownProperties(true)
+ *         .build();
+ * }</pre>
  */
-public class JsonRequestValidator {
+public final class JsonRequestValidator implements AutoCloseable {
 
     /** A constraint message matching this pattern is treated as a VO-specific error code. */
     public static final Pattern VO_CODE_PATTERN = Pattern.compile("[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+");
 
     private final ObjectMapper objectMapper;
+    private final ValidatorFactory validatorFactory;
     private final Validator validator;
     private final ErrorCodeMapper errorCodeMapper;
     private final boolean failOnUnknownProperties;
     private final FieldNameResolver fieldNames;
+    private volatile boolean closed;
 
-    /**
-     * @param objectMapper            the (Spring-managed) Jackson mapper; it is not modified
-     * @param validator               a thread-safe Jakarta validator
-     * @param errorCodeMapper         maps VO codes to generic codes
-     * @param failOnUnknownProperties whether unknown JSON properties are rejected
-     */
-    public JsonRequestValidator(ObjectMapper objectMapper, Validator validator,
-                                ErrorCodeMapper errorCodeMapper, boolean failOnUnknownProperties) {
-        this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
-        this.validator = Objects.requireNonNull(validator, "validator");
-        this.errorCodeMapper = Objects.requireNonNull(errorCodeMapper, "errorCodeMapper");
-        this.failOnUnknownProperties = failOnUnknownProperties;
+    private JsonRequestValidator(Builder b) {
+        this.objectMapper = b.objectMapper != null ? b.objectMapper.copy() : new ObjectMapper();
+        this.errorCodeMapper = b.errorCodeMapper != null ? b.errorCodeMapper
+                : new PropertiesErrorCodeMapper(b.errorMapping);
+        this.failOnUnknownProperties = b.failOnUnknownProperties;
+        this.validatorFactory = Validation.byProvider(HibernateValidator.class)
+                .configure()
+                .messageInterpolator(new ParameterMessageInterpolator())
+                .buildValidatorFactory();
+        this.validator = validatorFactory.getValidator();
         this.fieldNames = new FieldNameResolver(objectMapper);
+    }
+
+    /** @return a new builder; every setting is optional */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /** Closes the privately owned {@link ValidatorFactory}. Idempotent; {@link #validate} fails afterwards. */
+    @Override
+    public void close() {
+        if (!closed) {
+            closed = true;
+            validatorFactory.close();
+        }
     }
 
     /**
@@ -79,6 +112,9 @@ public class JsonRequestValidator {
      */
     public <T> ValidationResult<T> validate(String requestBody, Class<T> voType) {
         Objects.requireNonNull(voType, "voType");
+        if (closed) {
+            throw new IllegalStateException("JsonRequestValidator is closed");
+        }
         if (requestBody == null || requestBody.isBlank()) {
             return ValidationResult.failure(GenericErrorCode.EMPTY_BODY, "");
         }
@@ -161,5 +197,62 @@ public class JsonRequestValidator {
     }
 
     private record Resolved(GenericErrorCode code, String path) {
+    }
+
+    /**
+     * Builder for {@link JsonRequestValidator}. Not thread-safe; the built validator is.
+     */
+    public static final class Builder {
+
+        private ObjectMapper objectMapper;
+        private ErrorCodeMapper errorCodeMapper;
+        private Map<String, String> errorMapping = Map.of();
+        private boolean failOnUnknownProperties = true;
+
+        private Builder() {
+        }
+
+        /**
+         * @param objectMapper template mapper (e.g. the application's, to inherit its naming strategy and modules);
+         *                     it is {@linkplain ObjectMapper#copy() copied} and never modified. Default: a plain mapper.
+         * @return this builder
+         */
+        public Builder objectMapper(ObjectMapper objectMapper) {
+            this.objectMapper = objectMapper;
+            return this;
+        }
+
+        /**
+         * @param errorMapping VO code to generic code (wire code or enum name); ignored if an
+         *                     {@link #errorCodeMapper(ErrorCodeMapper)} is set
+         * @return this builder
+         */
+        public Builder errorMapping(Map<String, String> errorMapping) {
+            this.errorMapping = Map.copyOf(Objects.requireNonNull(errorMapping, "errorMapping"));
+            return this;
+        }
+
+        /**
+         * @param errorCodeMapper custom mapper; takes precedence over {@link #errorMapping(Map)}
+         * @return this builder
+         */
+        public Builder errorCodeMapper(ErrorCodeMapper errorCodeMapper) {
+            this.errorCodeMapper = errorCodeMapper;
+            return this;
+        }
+
+        /**
+         * @param failOnUnknownProperties reject unknown JSON properties (default {@code true})
+         * @return this builder
+         */
+        public Builder failOnUnknownProperties(boolean failOnUnknownProperties) {
+            this.failOnUnknownProperties = failOnUnknownProperties;
+            return this;
+        }
+
+        /** @return a new validator owning its own mapper copy and validator factory */
+        public JsonRequestValidator build() {
+            return new JsonRequestValidator(this);
+        }
     }
 }
