@@ -14,7 +14,7 @@ import jakarta.validation.constraints.Size;
 
 /**
  * Sample user VO. Constraint messages of the form {@code USR_xxx} are VO-specific error codes,
- * mapped to generic codes in {@code validator.error-mapping}. Errors name properties by their
+ * mapped to generic codes in {@code spring-validator.error-mapping}. Errors name properties by their
  * JSON names ({@code @JsonProperty}) or an {@code @ErrorField} override, never by Java variable names. {@code age} uses default messages,
  * so it falls back to the constraint-type default generic code.
  *

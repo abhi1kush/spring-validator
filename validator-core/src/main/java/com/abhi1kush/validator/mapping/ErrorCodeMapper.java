@@ -7,9 +7,9 @@ import java.util.Optional;
 /**
  * Maps a VO-specific error code (e.g. {@code USR_001}) to a generic service error code.
  *
- * <p>The auto-configuration registers a {@link PropertiesErrorCodeMapper} backed by
- * {@code validator.error-mapping.*}. Declare your own bean of this type to replace it
- * (e.g. to read mappings from a database); implementations must be thread-safe.
+ * <p>By default a {@link PropertiesErrorCodeMapper} built from the configured error mapping is used. Pass your own
+ * via {@code JsonRequestValidator.builder().errorCodeMapper(..)}, or, with {@code @EnableJsonRequestValidator},
+ * declare a single bean of this type; implementations must be thread-safe.
  */
 @FunctionalInterface
 public interface ErrorCodeMapper {

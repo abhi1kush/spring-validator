@@ -11,7 +11,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** Verifies the configurable unknown-fields policy end to end. */
-@SpringBootTest(properties = "validator.fail-on-unknown-properties=false")
+@SpringBootTest(properties = "spring-validator.fail-on-unknown-properties=false")
 @AutoConfigureMockMvc
 class UnknownFieldsIgnoredIT {
 

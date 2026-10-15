@@ -5,7 +5,8 @@ spring:
 server:
   port: 8080
 
-validator:
+# Namespaced settings; only read because the application declares @EnableJsonRequestValidator.
+spring-validator:
   # Reject JSON properties that the VO does not declare (E_UNKNOWN_FIELD). Set to false to ignore them.
   fail-on-unknown-properties: true
   # VO-specific code -> generic code (wire code like E_MANDATORY_MISSING or enum name like MANDATORY_MISSING).

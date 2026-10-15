@@ -4,7 +4,6 @@ import com.abhi1kush.validator.TestSupport;
 import com.abhi1kush.validator.annotation.ErrorField;
 import com.abhi1kush.validator.annotation.OptionalDate;
 import com.abhi1kush.validator.annotation.OptionalMinSize;
-import com.abhi1kush.validator.mapping.PropertiesErrorCodeMapper;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
@@ -184,9 +183,8 @@ class FieldNameResolutionTest {
     @Nested
     class NamingStrategy {
 
-        private final JsonRequestValidator snake = new JsonRequestValidator(
-                new ObjectMapper().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE),
-                TestSupport.VALIDATOR, new PropertiesErrorCodeMapper(Map.of()), true);
+        private final JsonRequestValidator snake = JsonRequestValidator.builder()
+                .objectMapper(new ObjectMapper().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)).build();
 
         @Test
         void globalSnakeCaseIsHonoured() {
